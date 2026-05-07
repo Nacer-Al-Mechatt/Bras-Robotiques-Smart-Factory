@@ -5,6 +5,9 @@
 int sock_fd;
 int id_bras;
 int running = 1;
+int outils_obtenus = 0;
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
 void log_message(const char* message) {
     time_t now;
@@ -14,43 +17,89 @@ void log_message(const char* message) {
     printf("[%s] [Bras %d] %s\n", timestamp, id_bras, message);
 }
 
-void obtenir_outil(int outil_id) {
+void* thread_reflexion(void* arg) {
+    while(running) {
+        log_message("En reflexion...");
+        Sleep(3000);
+    }
+    return NULL;
+}
+
+void* thread_communication(void* arg) {
     char msg[BUFFER_SIZE];
     char response[BUFFER_SIZE];
     
-    while(1) {
-        snprintf(msg, BUFFER_SIZE, "DEMANDE %d", outil_id);
+    while(running) {
+        snprintf(msg, BUFFER_SIZE, "DEMANDE 0");
         send(sock_fd, msg, strlen(msg), 0);
         
         memset(response, 0, BUFFER_SIZE);
         recv(sock_fd, response, BUFFER_SIZE - 1, 0);
         
         if(strcmp(response, "OK") == 0) {
-            char log[100];
-            snprintf(log, sizeof(log), "Outil %d obtenu!", outil_id);
-            log_message(log);
-            break;
+            log_message("Outil 0 obtenu!");
+            pthread_mutex_lock(&mutex);
+            outils_obtenus++;
+            pthread_cond_signal(&cond);
+            pthread_mutex_unlock(&mutex);
         } else {
-            char log[100];
-            snprintf(log, sizeof(log), "Attente outil %d...", outil_id);
-            log_message(log);
+            log_message("Attente outil 0...");
+            Sleep(1000);
+            continue;
+        }
+        
+        snprintf(msg, BUFFER_SIZE, "DEMANDE 1");
+        send(sock_fd, msg, strlen(msg), 0);
+        
+        memset(response, 0, BUFFER_SIZE);
+        recv(sock_fd, response, BUFFER_SIZE - 1, 0);
+        
+        if(strcmp(response, "OK") == 0) {
+            log_message("Outil 1 obtenu!");
+            pthread_mutex_lock(&mutex);
+            outils_obtenus++;
+            pthread_cond_signal(&cond);
+            pthread_mutex_unlock(&mutex);
+        } else {
+            log_message("Attente outil 1...");
             Sleep(1000);
         }
+        
+        Sleep(100);
     }
+    return NULL;
 }
 
-void liberer_outil(int outil_id) {
-    char msg[BUFFER_SIZE];
-    snprintf(msg, BUFFER_SIZE, "LIBERATION %d", outil_id);
-    send(sock_fd, msg, strlen(msg), 0);
-    
-    char log[100];
-    snprintf(log, sizeof(log), "Libere outil %d", outil_id);
-    log_message(log);
+void* thread_assemblage(void* arg) {
+    while(running) {
+        pthread_mutex_lock(&mutex);
+        while(outils_obtenus < 2 && running) {
+            pthread_cond_wait(&cond, &mutex);
+        }
+        pthread_mutex_unlock(&mutex);
+        
+        if(!running) break;
+        
+        log_message(">>> ASSEMBLAGE <<<");
+        Sleep(3000);
+        
+        send(sock_fd, "LIBERATION 1", 12, 0);
+        send(sock_fd, "LIBERATION 0", 12, 0);
+        log_message("Libere outil 1 et 0");
+        
+        pthread_mutex_lock(&mutex);
+        outils_obtenus = 0;
+        pthread_mutex_unlock(&mutex);
+        
+        log_message("=== FIN CYCLE ===\n");
+        Sleep(1000);
+    }
+    return NULL;
 }
 
 int main(int argc, char* argv[]) {
     WSADATA wsaData;
+    pthread_t reflexion_th, comm_th, assemblage_th;
     
     if(argc < 2) {
         printf("Usage: %s <id_bras>\n", argv[0]);
@@ -72,23 +121,14 @@ int main(int argc, char* argv[]) {
     }
     
     log_message("Connecte!");
-    Sleep(id_bras * 1000);
     
-    while(1) {
-        log_message("=== DEBUT CYCLE ===");
-        
-        obtenir_outil(0);
-        obtenir_outil(1);
-        
-        log_message(">>> ASSEMBLAGE <<<");
-        Sleep(3000);
-        
-        liberer_outil(1);
-        liberer_outil(0);
-        
-        log_message("=== FIN CYCLE ===\n");
-        Sleep(1000);
-    }
+    pthread_create(&reflexion_th, NULL, thread_reflexion, NULL);
+    pthread_create(&comm_th, NULL, thread_communication, NULL);
+    pthread_create(&assemblage_th, NULL, thread_assemblage, NULL);
+    
+    pthread_join(reflexion_th, NULL);
+    pthread_join(comm_th, NULL);
+    pthread_join(assemblage_th, NULL);
     
     closesocket(sock_fd);
     WSACleanup();
